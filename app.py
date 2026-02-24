@@ -1,16 +1,26 @@
 import sqlite3
 import bcrypt
+import jwt
+import datetime
 from pydantic import BaseModel, ValidationError, EmailStr, ConfigDict, Field
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 DB_NAME = "userdata.db"
+SECRET_KEY = "cambia_esta_clave_por_una_mas_segura"
+
 
 # =========================
 # 1) Esquemas (validaciones)
 # =========================
 
 class UserSchema(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=10)
+    model_config = ConfigDict(extra="forbid")
+
+
+class LoginSchema(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=10)
     model_config = ConfigDict(extra="forbid")
@@ -40,7 +50,6 @@ class UpdateUserSchema(BaseModel):
 
 @app.route('/registro', methods=['POST'])
 def register_user():
-    # Validar entrada
     try:
         user = UserSchema(**request.json)
     except ValidationError:
@@ -52,18 +61,15 @@ def register_user():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
-        # Verificar duplicado (sin recorrer toda la tabla)
         cursor.execute("SELECT 1 FROM usuarios WHERE email = ?", (user.email,))
         if cursor.fetchone():
             conn.close()
             return jsonify({"ERROR 409": "El usuario ya existe"}), 409
 
-        # Hash de contraseña
         bpassword = user.password.encode("utf-8")
         salt = bcrypt.gensalt()
         hash_password = bcrypt.hashpw(bpassword, salt)
 
-        # Insertar
         cursor.execute(
             "INSERT INTO usuarios (email, password) VALUES (?, ?)",
             (user.email, hash_password.decode())
@@ -83,12 +89,56 @@ def register_user():
 
 
 # =========================
-# 3) Endpoint: ACTUALIZAR PASSWORD
+# 3) Endpoint: LOGIN (JWT)
+# =========================
+
+@app.route('/login', methods=['POST'])
+def login():
+    try:
+        data = LoginSchema(**request.json)
+    except ValidationError:
+        return jsonify({"ERROR 400": "Credenciales Invalidas"}), 400
+    except Exception:
+        return jsonify({"ERROR 400": "Credenciales Invalidas"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT password, role FROM usuarios WHERE email = ?", (data.email,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"ERROR 401": "Credenciales Invalidas"}), 401
+
+        hash_guardado = row[0].encode("utf-8")
+        role = row[1]
+
+        if not bcrypt.checkpw(data.password.encode("utf-8"), hash_guardado):
+            return jsonify({"ERROR 401": "Credenciales Invalidas"}), 401
+
+        payload = {
+            "email": data.email,
+            "role": role,
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
+        }
+
+        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+        return jsonify({"token": token}), 200
+
+    except sqlite3.Error as error:
+        print(error)
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+# =========================
+# 4) Endpoint: ACTUALIZAR PASSWORD
 # =========================
 
 @app.route('/actualizar-password', methods=['PUT'])
 def update_password():
-    # Validar entrada
     try:
         data = UpdatePasswordSchema(**request.json)
     except ValidationError:
@@ -100,7 +150,6 @@ def update_password():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
-        # Buscar usuario y hash actual
         cursor.execute("SELECT password FROM usuarios WHERE email = ?", (data.email,))
         row = cursor.fetchone()
 
@@ -110,21 +159,17 @@ def update_password():
 
         hash_guardado = row[0].encode("utf-8")
 
-        # Verificar contraseña actual
         if not bcrypt.checkpw(data.password_actual.encode("utf-8"), hash_guardado):
             conn.close()
             return jsonify({"ERROR 401": "Contraseña actual incorrecta"}), 401
 
-        # Evitar misma contraseña
         if data.password_actual == data.password_nueva:
             conn.close()
             return jsonify({"ERROR 400": "La nueva contraseña no puede ser igual"}), 400
 
-        # Crear hash de nueva contraseña
         salt = bcrypt.gensalt()
         new_hash = bcrypt.hashpw(data.password_nueva.encode("utf-8"), salt).decode()
 
-        # Update
         cursor.execute(
             "UPDATE usuarios SET password = ? WHERE email = ?",
             (new_hash, data.email)
@@ -144,12 +189,11 @@ def update_password():
 
 
 # =========================
-# 4) Endpoint: ACTUALIZAR USUARIO (email y/o role)
+# 5) Endpoint: ACTUALIZAR USUARIO (email y/o role)
 # =========================
 
 @app.route('/actualizar-usuario', methods=['PUT'])
 def update_user():
-    # Validar entrada
     try:
         data = UpdateUserSchema(**request.json)
     except ValidationError:
@@ -157,13 +201,11 @@ def update_user():
     except Exception:
         return jsonify({"ERROR 400": "Credenciales Invalidas"}), 400
 
-    # Debe enviar algo para actualizar
     if data.email_nuevo is None and data.role_nuevo is None:
         return jsonify({"ERROR 400": "Nada que actualizar"}), 400
 
-    # Validar role si viene
     if data.role_nuevo is not None:
-        roles_validos = {"cliente", "admin"}  # ajusta si quieres
+        roles_validos = {"cliente", "admin"}
         if data.role_nuevo not in roles_validos:
             return jsonify({"ERROR 400": "Rol invalido"}), 400
 
@@ -171,7 +213,6 @@ def update_user():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
-        # Buscar usuario por email_actual
         cursor.execute("SELECT password FROM usuarios WHERE email = ?", (data.email_actual,))
         row = cursor.fetchone()
 
@@ -179,20 +220,17 @@ def update_user():
             conn.close()
             return jsonify({"ERROR 404": "Usuario no encontrado"}), 404
 
-        # Verificar contraseña actual
         hash_guardado = row[0].encode("utf-8")
         if not bcrypt.checkpw(data.password_actual.encode("utf-8"), hash_guardado):
             conn.close()
             return jsonify({"ERROR 401": "Contraseña actual incorrecta"}), 401
 
-        # Si cambia email, verificar duplicado
         if data.email_nuevo is not None and data.email_nuevo != data.email_actual:
             cursor.execute("SELECT 1 FROM usuarios WHERE email = ?", (data.email_nuevo,))
             if cursor.fetchone():
                 conn.close()
                 return jsonify({"ERROR 409": "El usuario ya existe"}), 409
 
-        # Construir UPDATE dinámico
         campos = []
         valores = []
 
@@ -224,12 +262,9 @@ def update_user():
 
 
 # =========================
-# 5) Arranque
+# 6) Arranque
 # =========================
 
 if __name__ == '__main__':
-    # Para confirmar rutas
     print(app.url_map)
-
-    # Evita que el reloader oculte prints en algunos casos
     app.run(debug=True, use_reloader=False)
