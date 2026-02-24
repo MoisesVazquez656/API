@@ -6,7 +6,6 @@ from flask import Flask, jsonify, request
 app = Flask(__name__)
 DB_NAME = "userdata.db"
 
-
 # =========================
 # 1) Esquemas (validaciones)
 # =========================
