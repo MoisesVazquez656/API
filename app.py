@@ -7,7 +7,7 @@ from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 DB_NAME = "userdata.db"
-SECRET_KEY = "cambia_esta_clave_por_una_mas_segura"
+from config import Config
 
 
 # =========================
@@ -124,7 +124,7 @@ def login():
             "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
         }
 
-        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        token = jwt.encode(payload, Config.SECRET_KEY, algorithm="HS256")
 
         return jsonify({"token": token}), 200
 
