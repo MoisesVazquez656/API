@@ -2,12 +2,52 @@ import sqlite3
 import bcrypt
 import jwt
 import datetime
+from functools import wraps
+
 from pydantic import BaseModel, ValidationError, EmailStr, ConfigDict, Field
 from flask import Flask, jsonify, request
 
+from config import Config  # ✅ lee SECRET_KEY desde .env
+
 app = Flask(__name__)
 DB_NAME = "userdata.db"
-from config import Config
+
+
+# =========================
+# Helpers de seguridad
+# =========================
+
+def contiene_html_peligroso(texto: str) -> bool:
+    return "<" in texto or ">" in texto
+
+
+def token_requerido(roles_permitidos=None):
+    def decorador(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            auth = request.headers.get("Authorization", "")
+
+            if not auth.startswith("Bearer "):
+                return jsonify({"ERROR 401": "Token requerido"}), 401
+
+            token = auth.split(" ", 1)[1].strip()
+
+            try:
+                payload = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+            except jwt.ExpiredSignatureError:
+                return jsonify({"ERROR 401": "Token expirado"}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({"ERROR 401": "Token invalido"}), 401
+
+            request.user = payload  # {email, role, exp}
+
+            if roles_permitidos is not None:
+                if payload.get("role") not in roles_permitidos:
+                    return jsonify({"ERROR 403": "No autorizado"}), 403
+
+            return f(*args, **kwargs)
+        return wrapper
+    return decorador
 
 
 # =========================
@@ -36,11 +76,23 @@ class UpdatePasswordSchema(BaseModel):
 class UpdateUserSchema(BaseModel):
     email_actual: EmailStr
     password_actual: str = Field(min_length=8, max_length=10)
-
-    # opcionales (puedes mandar uno o ambos)
     email_nuevo: EmailStr | None = None
     role_nuevo: str | None = None
+    model_config = ConfigDict(extra="forbid")
 
+
+# ✅ Endpoint proyecto: crear viaje (cliente)
+class CrearViajeSchema(BaseModel):
+    origen: str = Field(min_length=3, max_length=120)
+    destino: str = Field(min_length=3, max_length=120)
+    distancia_km: float = Field(gt=0)  # no negativa ni 0
+    pago_metodo: str = Field(min_length=3, max_length=20)
+    model_config = ConfigDict(extra="forbid")
+
+
+# ✅ Endpoint proyecto: aceptar viaje (conductor/admin)
+class AceptarViajeSchema(BaseModel):
+    viaje_id: int = Field(gt=0)
     model_config = ConfigDict(extra="forbid")
 
 
@@ -49,6 +101,7 @@ class UpdateUserSchema(BaseModel):
 # =========================
 
 @app.route('/registro', methods=['POST'])
+@app.route('/api/usuarios/registro', methods=['POST'])  # alias “estándar”
 def register_user():
     try:
         user = UserSchema(**request.json)
@@ -68,11 +121,11 @@ def register_user():
 
         bpassword = user.password.encode("utf-8")
         salt = bcrypt.gensalt()
-        hash_password = bcrypt.hashpw(bpassword, salt)
+        hash_password = bcrypt.hashpw(bpassword, salt).decode()
 
         cursor.execute(
             "INSERT INTO usuarios (email, password) VALUES (?, ?)",
-            (user.email, hash_password.decode())
+            (user.email, hash_password)
         )
         conn.commit()
         conn.close()
@@ -93,6 +146,7 @@ def register_user():
 # =========================
 
 @app.route('/login', methods=['POST'])
+@app.route('/api/usuarios/login', methods=['POST'])  # alias “estándar”
 def login():
     try:
         data = LoginSchema(**request.json)
@@ -125,7 +179,6 @@ def login():
         }
 
         token = jwt.encode(payload, Config.SECRET_KEY, algorithm="HS256")
-
         return jsonify({"token": token}), 200
 
     except sqlite3.Error as error:
@@ -205,7 +258,7 @@ def update_user():
         return jsonify({"ERROR 400": "Nada que actualizar"}), 400
 
     if data.role_nuevo is not None:
-        roles_validos = {"cliente", "admin"}
+        roles_validos = {"cliente", "admin"}  # admin = conductor
         if data.role_nuevo not in roles_validos:
             return jsonify({"ERROR 400": "Rol invalido"}), 400
 
@@ -262,7 +315,99 @@ def update_user():
 
 
 # =========================
-# 6) Arranque
+# 6) ENDPOINTS DEL PROYECTO (UBER)
+# =========================
+
+# ✅ Cliente crea viaje
+@app.route("/api/viajes/crear", methods=["POST"])
+@token_requerido(roles_permitidos={"cliente"})
+def crear_viaje():
+    try:
+        data = CrearViajeSchema(**request.json)
+    except ValidationError:
+        return jsonify({"ERROR 400": "Datos invalidos"}), 400
+
+    if contiene_html_peligroso(data.origen) or contiene_html_peligroso(data.destino):
+        return jsonify({"ERROR 400": "Texto no permitido"}), 400
+
+    metodos = {"efectivo", "tarjeta"}
+    if data.pago_metodo.lower() not in metodos:
+        return jsonify({"ERROR 400": "Metodo de pago invalido"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cliente_email = request.user["email"]
+
+        cursor.execute("""
+            INSERT INTO viajes (cliente_email, origen, destino, distancia_km, pago_metodo, estado)
+            VALUES (?, ?, ?, ?, ?, 'pendiente')
+        """, (cliente_email, data.origen, data.destino, data.distancia_km, data.pago_metodo.lower()))
+
+        conn.commit()
+        viaje_id = cursor.lastrowid
+        conn.close()
+
+        return jsonify({"SUCCESS 201": "Viaje creado", "viaje_id": viaje_id}), 201
+
+    except sqlite3.Error as e:
+        print(e)
+        try:
+            conn.close()
+        except:
+            pass
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+# ✅ Conductor/admin acepta viaje
+@app.route("/api/viajes/aceptar", methods=["POST"])
+@token_requerido(roles_permitidos={"admin"})
+def aceptar_viaje():
+    try:
+        data = AceptarViajeSchema(**request.json)
+    except ValidationError:
+        return jsonify({"ERROR 400": "Datos invalidos"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT estado FROM viajes WHERE id = ?", (data.viaje_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return jsonify({"ERROR 404": "Viaje no encontrado"}), 404
+
+        if row[0] != "pendiente":
+            conn.close()
+            return jsonify({"ERROR 409": "Viaje no disponible"}), 409
+
+        conductor_email = request.user["email"]
+
+        cursor.execute("""
+            UPDATE viajes
+            SET estado = 'aceptado', conductor_email = ?
+            WHERE id = ?
+        """, (conductor_email, data.viaje_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({"SUCCESS 200": "Viaje aceptado"}), 200
+
+    except sqlite3.Error as e:
+        print(e)
+        try:
+            conn.close()
+        except:
+            pass
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+# =========================
+# 7) Arranque
 # =========================
 
 if __name__ == '__main__':
