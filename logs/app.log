@@ -1,0 +1,21 @@
+[2026-04-12 21:58:02] | [INFO] | API iniciada correctamente.
+[2026-04-12 21:59:10] | [DEBUG] | Inicio de solicitud de autenticacion.
+[2026-04-12 21:59:10] | [DEBUG] | Validacion de login exitosa para email=conductor@gmail.com
+[2026-04-12 21:59:11] | [INFO] | Autenticacion exitosa. email=conductor@gmail.com, role=admin
+[2026-04-12 22:02:32] | [DEBUG] | Inicio de solicitud de autenticacion.
+[2026-04-12 22:02:32] | [DEBUG] | Validacion de login exitosa para email=conductor@gmail.com
+[2026-04-12 22:02:32] | [WARNING] | Intento de login fallido por password incorrecta. email=conductor@gmail.com
+[2026-04-12 22:03:26] | [WARNING] | Intento de acceso con token invalido en endpoint /api/viajes/crear
+[2026-04-12 22:06:07] | [DEBUG] | Inicio de solicitud de autenticacion.
+[2026-04-12 22:06:07] | [DEBUG] | Validacion de login exitosa para email=conductor@gmail.com
+[2026-04-12 22:06:07] | [WARNING] | Intento de login fallido por password incorrecta. email=conductor@gmail.com
+[2026-04-12 22:06:36] | [DEBUG] | Inicio de solicitud de autenticacion.
+[2026-04-12 22:06:36] | [DEBUG] | Validacion de login exitosa para email=conductor@gmail.com
+[2026-04-12 22:06:37] | [WARNING] | Intento de login fallido por password incorrecta. email=conductor@gmail.com
+[2026-04-12 22:06:41] | [DEBUG] | Inicio de solicitud de autenticacion.
+[2026-04-12 22:06:41] | [DEBUG] | Validacion de login exitosa para email=conductor@gmail.com
+[2026-04-12 22:06:42] | [INFO] | Autenticacion exitosa. email=conductor@gmail.com, role=admin
+[2026-04-12 22:08:38] | [INFO] | API iniciada correctamente.
+[2026-04-12 22:08:46] | [DEBUG] | Inicio de solicitud de autenticacion.
+[2026-04-12 22:08:46] | [DEBUG] | Validacion de login exitosa para email=conductor@gmail.com
+[2026-04-12 22:08:46] | [ERROR] | Error de base de datos en login. email=conductor@gmail.com detalle=no such table: tabla_inexistente

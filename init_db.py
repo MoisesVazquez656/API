@@ -6,7 +6,6 @@ def create_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Tabla usuarios
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16,7 +15,6 @@ def create_db():
     );
     """)
 
-    # Tabla viajes
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS viajes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +33,6 @@ def create_db():
 
     conn.commit()
     conn.close()
-
     print("✅ BD creada y tablas listas.")
 
 if __name__ == "__main__":
