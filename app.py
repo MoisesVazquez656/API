@@ -14,10 +14,6 @@ app = Flask(__name__)
 DB_NAME = "userdata.db"
 
 
-# =========================
-# Helpers de seguridad
-# =========================
-
 def contiene_html_peligroso(texto: str) -> bool:
     return "<" in texto or ">" in texto
 
@@ -62,10 +58,6 @@ def token_requerido(roles_permitidos=None):
     return decorador
 
 
-# =========================
-# Esquemas
-# =========================
-
 class UserSchema(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=10)
@@ -106,19 +98,11 @@ class AceptarViajeSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# =========================
-# Health check opcional
-# =========================
-
 @app.route("/", methods=["GET"])
 def home():
     logger.debug("Health check ejecutado.")
     return jsonify({"mensaje": "API funcionando"}), 200
 
-
-# =========================
-# Registro
-# =========================
 
 @app.route("/registro", methods=["POST"])
 @app.route("/api/usuarios/registro", methods=["POST"])
@@ -167,14 +151,10 @@ def register_user():
         )
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.error(f"No se pudo cerrar la conexion: {str(close_error)}")
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
-
-# =========================
-# Login
-# =========================
 
 @app.route("/login", methods=["POST"])
 @app.route("/api/usuarios/login", methods=["POST"])
@@ -228,10 +208,6 @@ def login():
         )
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
-
-# =========================
-# Actualizar password
-# =========================
 
 @app.route("/actualizar-password", methods=["PUT"])
 def update_password():
@@ -291,14 +267,10 @@ def update_password():
         )
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.error(f"No se pudo cerrar la conexion: {str(close_error)}")
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
-
-# =========================
-# Actualizar usuario
-# =========================
 
 @app.route("/actualizar-usuario", methods=["PUT"])
 def update_user():
@@ -352,21 +324,21 @@ def update_user():
                 )
                 return jsonify({"ERROR 409": "El usuario ya existe"}), 409
 
-        campos = []
-        valores = []
-
-        if data.email_nuevo is not None:
-            campos.append("email = ?")
-            valores.append(data.email_nuevo)
-
-        if data.role_nuevo is not None:
-            campos.append("role = ?")
-            valores.append(data.role_nuevo)
-
-        valores.append(data.email_actual)
-
-        query = f"UPDATE usuarios SET {', '.join(campos)} WHERE email = ?"
-        cursor.execute(query, tuple(valores))
+        if data.email_nuevo is not None and data.role_nuevo is not None:
+            cursor.execute(
+                "UPDATE usuarios SET email = ?, role = ? WHERE email = ?",
+                (data.email_nuevo, data.role_nuevo, data.email_actual)
+            )
+        elif data.email_nuevo is not None:
+            cursor.execute(
+                "UPDATE usuarios SET email = ? WHERE email = ?",
+                (data.email_nuevo, data.email_actual)
+            )
+        elif data.role_nuevo is not None:
+            cursor.execute(
+                "UPDATE usuarios SET role = ? WHERE email = ?",
+                (data.role_nuevo, data.email_actual)
+            )
 
         conn.commit()
         conn.close()
@@ -384,14 +356,10 @@ def update_user():
         )
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.error(f"No se pudo cerrar la conexion: {str(close_error)}")
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
-
-# =========================
-# Crear viaje
-# =========================
 
 @app.route("/api/viajes/crear", methods=["POST"])
 @token_requerido(roles_permitidos={"cliente"})
@@ -436,14 +404,10 @@ def crear_viaje():
         logger.error(f"Error de base de datos al crear viaje. usuario={request.user['email']} detalle={str(e)}")
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.error(f"No se pudo cerrar la conexion: {str(close_error)}")
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
-
-# =========================
-# Aceptar viaje
-# =========================
 
 @app.route("/api/viajes/aceptar", methods=["POST"])
 @token_requerido(roles_permitidos={"admin"})
@@ -495,15 +459,11 @@ def aceptar_viaje():
         )
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.error(f"No se pudo cerrar la conexion: {str(close_error)}")
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
 
-# =========================
-# Arranque
-# =========================
-
 if __name__ == "__main__":
     logger.info("API iniciada correctamente.")
-    app.run(debug=True, use_reloader=False)
+    app.run(debug=False, use_reloader=False)
