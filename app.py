@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import bcrypt
 import jwt
@@ -9,9 +10,14 @@ from flask import Flask, jsonify, request
 
 from config import Config
 from logger_config import logger
+from init_db import create_db
 
 app = Flask(__name__)
-DB_NAME = "userdata.db"
+DB_NAME = os.getenv("DB_PATH", "userdata.db")
+
+create_db()
+
+ROLES_SIGERUTT = {"admin", "supervisor", "operador"}
 
 
 def contiene_html_peligroso(texto: str) -> bool:
@@ -98,6 +104,21 @@ class AceptarViajeSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AdminCreateUserSchema(BaseModel):
+    nombre: str = Field(min_length=3, max_length=150)
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=72)
+    role: str = Field(min_length=3, max_length=20)
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdminUpdateUserSchema(BaseModel):
+    nombre: str | None = Field(default=None, min_length=3, max_length=150)
+    email: EmailStr | None = None
+    role: str | None = Field(default=None, min_length=3, max_length=20)
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.route("/", methods=["GET"])
 def home():
     logger.debug("Health check ejecutado.")
@@ -175,7 +196,7 @@ def login():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
-        cursor.execute("SELECT password, role FROM usuarios WHERE email = ?", (data.email,))
+        cursor.execute("SELECT id, password, role, nombre FROM usuarios WHERE email = ?", (data.email,))
         row = cursor.fetchone()
         conn.close()
 
@@ -183,15 +204,19 @@ def login():
             logger.warning(f"Intento de login con usuario inexistente. email={data.email}")
             return jsonify({"ERROR 401": "Credenciales Invalidas"}), 401
 
-        hash_guardado = row[0].encode("utf-8")
-        role = row[1]
+        user_id = row[0]
+        hash_guardado = row[1].encode("utf-8")
+        role = row[2]
+        nombre = row[3]
 
         if not bcrypt.checkpw(data.password.encode("utf-8"), hash_guardado):
             logger.warning(f"Intento de login fallido por password incorrecta. email={data.email}")
             return jsonify({"ERROR 401": "Credenciales Invalidas"}), 401
 
         payload = {
+            "id": user_id,
             "email": data.email,
+            "nombre": nombre,
             "role": role,
             "exp": datetime.now(UTC) + timedelta(minutes=30)
         }
@@ -199,7 +224,7 @@ def login():
         token = jwt.encode(payload, Config.SECRET_KEY, algorithm="HS256")
 
         logger.info(f"Autenticacion exitosa. email={data.email}, role={role}")
-        return jsonify({"token": token}), 200
+        return jsonify({"token": token, "id": user_id, "nombre": nombre, "role": role}), 200
 
     except sqlite3.Error as error:
         logger.error(
@@ -461,6 +486,191 @@ def aceptar_viaje():
             conn.close()
         except Exception as close_error:
             logger.error(f"No se pudo cerrar la conexion: {str(close_error)}")
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+@app.route("/api/admin/usuarios", methods=["POST"])
+@token_requerido(roles_permitidos={"admin"})
+def admin_crear_usuario():
+    logger.debug("Inicio de creacion de usuario por administrador.")
+
+    try:
+        data = AdminCreateUserSchema(**request.json)
+    except ValidationError:
+        logger.warning("Intento de crear usuario con datos invalidos.")
+        return jsonify({"ERROR 400": "Datos invalidos"}), 400
+    except Exception as e:
+        logger.error(f"Error inesperado en validacion de crear usuario: {str(e)}")
+        return jsonify({"ERROR 400": "Datos invalidos"}), 400
+
+    if data.role not in ROLES_SIGERUTT:
+        logger.warning(f"Intento de crear usuario con rol invalido. role={data.role}")
+        return jsonify({"ERROR 400": "Rol invalido"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT 1 FROM usuarios WHERE email = ?", (data.email,))
+        if cursor.fetchone():
+            conn.close()
+            logger.warning(f"Intento de crear usuario duplicado. email={data.email}")
+            return jsonify({"ERROR 409": "El usuario ya existe"}), 409
+
+        hash_password = bcrypt.hashpw(data.password.encode("utf-8"), bcrypt.gensalt()).decode()
+
+        cursor.execute(
+            "INSERT INTO usuarios (nombre, email, password, role) VALUES (?, ?, ?, ?)",
+            (data.nombre, data.email, hash_password, data.role)
+        )
+        conn.commit()
+        nuevo_id = cursor.lastrowid
+        conn.close()
+
+        logger.info(f"Usuario creado por administrador. email={data.email}, admin={request.user['email']}")
+        return jsonify({"SUCCESS 201": "Usuario creado", "id": nuevo_id}), 201
+
+    except sqlite3.Error as error:
+        logger.error(f"Error de base de datos al crear usuario. detalle={str(error)}")
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+@app.route("/api/admin/usuarios", methods=["GET"])
+@token_requerido(roles_permitidos={"admin"})
+def admin_listar_usuarios():
+    logger.debug("Listado de usuarios solicitado por administrador.")
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre, email, role FROM usuarios ORDER BY id")
+        filas = cursor.fetchall()
+        conn.close()
+
+        usuarios = [
+            {"id": fila[0], "nombre": fila[1], "email": fila[2], "role": fila[3]}
+            for fila in filas
+        ]
+        return jsonify({"usuarios": usuarios}), 200
+
+    except sqlite3.Error as error:
+        logger.error(f"Error de base de datos al listar usuarios. detalle={str(error)}")
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+@app.route("/api/admin/usuarios/<email>", methods=["GET"])
+@token_requerido(roles_permitidos={"admin"})
+def admin_obtener_usuario(email):
+    logger.debug(f"Consulta de usuario solicitada por administrador. email={email}")
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre, email, role FROM usuarios WHERE email = ?", (email,))
+        fila = cursor.fetchone()
+        conn.close()
+
+        if not fila:
+            return jsonify({"ERROR 404": "Usuario no encontrado"}), 404
+
+        return jsonify({"id": fila[0], "nombre": fila[1], "email": fila[2], "role": fila[3]}), 200
+
+    except sqlite3.Error as error:
+        logger.error(f"Error de base de datos al obtener usuario. detalle={str(error)}")
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+@app.route("/api/admin/usuarios/<email>", methods=["PUT"])
+@token_requerido(roles_permitidos={"admin"})
+def admin_actualizar_usuario(email):
+    logger.debug(f"Actualizacion de usuario solicitada por administrador. email={email}")
+
+    try:
+        data = AdminUpdateUserSchema(**request.json)
+    except ValidationError:
+        logger.warning("Intento de actualizar usuario con datos invalidos.")
+        return jsonify({"ERROR 400": "Datos invalidos"}), 400
+    except Exception as e:
+        logger.error(f"Error inesperado en validacion de actualizar usuario: {str(e)}")
+        return jsonify({"ERROR 400": "Datos invalidos"}), 400
+
+    if data.role is not None and data.role not in ROLES_SIGERUTT:
+        logger.warning(f"Intento de actualizar usuario con rol invalido. role={data.role}")
+        return jsonify({"ERROR 400": "Rol invalido"}), 400
+
+    if data.nombre is None and data.email is None and data.role is None:
+        return jsonify({"ERROR 400": "Nada que actualizar"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id FROM usuarios WHERE email = ?", (email,))
+        if not cursor.fetchone():
+            conn.close()
+            logger.warning(f"Intento de actualizar usuario inexistente. email={email}")
+            return jsonify({"ERROR 404": "Usuario no encontrado"}), 404
+
+        if data.email is not None and data.email != email:
+            cursor.execute("SELECT 1 FROM usuarios WHERE email = ?", (data.email,))
+            if cursor.fetchone():
+                conn.close()
+                logger.warning(f"Intento de actualizar a un correo ya existente. email_nuevo={data.email}")
+                return jsonify({"ERROR 409": "El correo ya esta en uso"}), 409
+
+        campos = []
+        valores = []
+        if data.nombre is not None:
+            campos.append("nombre = ?")
+            valores.append(data.nombre)
+        if data.email is not None:
+            campos.append("email = ?")
+            valores.append(data.email)
+        if data.role is not None:
+            campos.append("role = ?")
+            valores.append(data.role)
+        valores.append(email)
+
+        cursor.execute(f"UPDATE usuarios SET {', '.join(campos)} WHERE email = ?", valores)
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Usuario actualizado por administrador. email={email}, admin={request.user['email']}")
+        return jsonify({"SUCCESS 200": "Usuario actualizado"}), 200
+
+    except sqlite3.Error as error:
+        logger.error(f"Error de base de datos al actualizar usuario. detalle={str(error)}")
+        return jsonify({"ERROR 500": "Error en el servidor"}), 500
+
+
+@app.route("/api/admin/usuarios/<email>", methods=["DELETE"])
+@token_requerido(roles_permitidos={"admin"})
+def admin_eliminar_usuario(email):
+    logger.debug(f"Eliminacion de usuario solicitada por administrador. email={email}")
+
+    if email == request.user["email"]:
+        logger.warning(f"Intento de auto-eliminacion de administrador. email={email}")
+        return jsonify({"ERROR 400": "No puedes eliminar tu propio usuario"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT 1 FROM usuarios WHERE email = ?", (email,))
+        if not cursor.fetchone():
+            conn.close()
+            logger.warning(f"Intento de eliminar usuario inexistente. email={email}")
+            return jsonify({"ERROR 404": "Usuario no encontrado"}), 404
+
+        cursor.execute("DELETE FROM usuarios WHERE email = ?", (email,))
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Usuario eliminado por administrador. email={email}, admin={request.user['email']}")
+        return jsonify({"SUCCESS 200": "Usuario eliminado"}), 200
+
+    except sqlite3.Error as error:
+        logger.error(f"Error de base de datos al eliminar usuario. detalle={str(error)}")
         return jsonify({"ERROR 500": "Error en el servidor"}), 500
 
 

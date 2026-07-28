@@ -1,19 +1,30 @@
+import os
 import sqlite3
 
-DB_NAME = "userdata.db"
+DB_NAME = os.getenv("DB_PATH", "userdata.db")
 
 def create_db():
+    db_dir = os.path.dirname(DB_NAME)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL DEFAULT '',
         email TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
         role TEXT DEFAULT 'cliente'
     );
     """)
+
+    cursor.execute("PRAGMA table_info(usuarios)")
+    columnas_existentes = {fila[1] for fila in cursor.fetchall()}
+    if "nombre" not in columnas_existentes:
+        cursor.execute("ALTER TABLE usuarios ADD COLUMN nombre TEXT NOT NULL DEFAULT ''")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS viajes (

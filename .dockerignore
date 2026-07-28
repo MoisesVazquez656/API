@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+.git
+.gitignore
+logs/
+userdata.db
+reporte_seguridad.html
+reporte_seguridad_final.html
